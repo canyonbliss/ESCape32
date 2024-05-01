@@ -1,10 +1,44 @@
 cmake_minimum_required(VERSION 3.15)
 set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+
+#set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+
+option(BUILD_DEPS "enable building of libopencm3" OFF)
+
+if(DEFINED ENV{CC})
+    set(CMAKE_C_COMPILER $ENV{CC})
+    include_directories("/usr/arm-none-eabi/include")
+else()
+    set(CMAKE_C_COMPILER arm-none-eabi-gcc)
+endif()
+
+if(DEFINED ENV{CXX})
+    set(CMAKE_CXX_COMPILER $ENV{CXX})
+else()
+    set(CMAKE_CXX_COMPILER arm-none-eabi-g++)
+endif()
+
 set(CMAKE_C_COMPILER_WORKS 1)
 set(CMAKE_C_FLAGS "-Os -g")
 set(CMAKE_C_FLAGS_DEBUG "-Og")
 project(ESCape32 C)
+
+if(BUILD_DEPS)
+	include(ExternalProject)
+	set(OPENCM3_TARGETS "stm32/f0 stm32/g0 stm32/g4")
+	set(OPENCM3_SRC_DIR  "${CMAKE_SOURCE_DIR}/lib/libopencm3")
+	ExternalProject_Add(libopencm3
+		SOURCE_DIR ${OPENCM3_SRC_DIR}
+		CONFIGURE_COMMAND ""
+		BUILD_COMMAND make -C ${OPENCM3_SRC_DIR} TARGETS=${OPENCM3_TARGETS} V=1
+		INSTALL_COMMAND ""
+		#INSTALL_COMMAND make install DESTDIR=${CMAKE_CURRENT_BINARY_DIR}/libopencm3
+		#BUILD_IN_SOURCE true
+		#BUILD_BYPRODUCTS ${OPENCM3_SRC_DIR}/lib/libopencm3_stm32f0.a ${OPENCM3_SRC_DIR}/lib/libopencm3_stm32g0.a ${OPENCM3_SRC_DIR}/lib/libopencm3_stm32g4.a
+	)
+	set(LIBOPENCM3_DIR ${OPENCM3_SRC_DIR})
+endif(BUILD_DEPS)
+
 if(UNIX AND NOT CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT) # Use 'CMAKE_INSTALL_PREFIX' as alternative system root
 	set(CMAKE_PREFIX_PATH ${CMAKE_INSTALL_PREFIX})
 	include(GNUInstallDirs)
@@ -30,6 +64,9 @@ function(add_target name mcu)
 	set(hex ${name}${rev}.hex)
 	file(GLOB srcs src/*.c mcu/${mcu}/*.c)
 	add_executable(${elf} ${srcs})
+if(BUILD_DEPS)
+	add_dependencies(${elf} libopencm3)
+endif(BUILD_DEPS)
 	target_include_directories(${elf} PRIVATE src mcu/${mcu})
 	target_compile_options(${elf} PRIVATE ${opts})
 	target_compile_definitions(${elf} PRIVATE ${mcu} ${name} ${defs} TARGET_NAME="${name}" ${ARGN})
