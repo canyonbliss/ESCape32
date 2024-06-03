@@ -195,9 +195,12 @@ static void nextstep(void) {
 		return;
 	}
 #else
-	static const char map[] = {3, 5, 4, 1, 2, 6}; // map[code] -> step
+	static const char map[] = {2, 4, 3, 6, 1, 5}; // map[code] -> step
 	int code = IFTIM_IDR;
 	if (code < 1 || code > 6) reset(); // Invalid Hall sensor code
+#ifdef INVERTED_HALL
+	code ^= 7;
+#endif
 	step = map[code - 1];
 #endif
 	static const char seq[] = {0x35, 0x19, 0x2b, 0x32, 0x1e, 0x2c}; // Commutation sequence
@@ -591,11 +594,11 @@ void main(void) {
 		__WFI();
 		int input = throt;
 		int range = cfg.sine_range * 20;
-		int margin = range && sine ? 20 : 0;
+		int hyst = range && sine ? 20 : 0;
 		int newduty = 0;
 		if (!running) curduty = 0;
 		if (input > 0) { // Forward
-			if (range + margin < input) newduty = scale(input, range, 2000, cfg.duty_min * 20, cfg.duty_max * 20);
+			if (range + hyst < input) newduty = scale(input, range, 2000, cfg.duty_min * 20, cfg.duty_max * 20);
 			else sine = scale(input, 0, range, 1000 << IFTIM_XRES, cfg.prot_stall ? (333333 << IFTIM_XRES) / cfg.prot_stall : 145 << IFTIM_XRES);
 			reverse = cfg.revdir ^ flipdir;
 			running = 1;
@@ -606,14 +609,17 @@ void main(void) {
 				running = 0;
 				braking = 1;
 			} else {
-				if (range + margin < -input) newduty = scale(-input, range, 2000, cfg.duty_min * 20, cfg.duty_max * 20);
+				if (range + hyst < -input) newduty = scale(-input, range, 2000, cfg.duty_min * 20, cfg.duty_max * 20);
 				else sine = scale(-input, 0, range, 1000 << IFTIM_XRES, cfg.prot_stall ? (333333 << IFTIM_XRES) / cfg.prot_stall : 145 << IFTIM_XRES);
 				reverse = !cfg.revdir ^ flipdir;
 				running = 1;
 			}
 		} else { // Neutral
+#ifndef SENSORED
 			if (sync == 6) boost = 0; // Coasting
-			else { // Drag brake
+			else // Drag brake
+#endif
+			{
 				curduty = cfg.duty_drag * 20;
 				running = 0;
 			}
