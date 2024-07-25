@@ -23,12 +23,13 @@
 
 void initbec(void) {
 #ifdef USE_BEC
-#if USE_BEC == 0xB3B4
-	GPIOB_ODR |= cfg.bec << 3;
-	GPIOB_MODER &= ~0x280; // B3,B4 (output)
+	int x = cfg.bec;
+#if USE_BEC == 0xB3B5
+	GPIOB_ODR |= (x & 1) << 3 | (x & 2) << 4;
+	GPIOB_MODER &= ~0x880; // B3,B5 (output)
 #else // Use SWD pads
 	if (GPIOA_IDR & 0x6000) return; // Active or not connected
-	GPIOA_ODR |= cfg.bec << 13;
+	GPIOA_ODR |= x << 13;
 	GPIOA_OSPEEDR &= ~0x3c000000; // A13,A14 (low speed)
 	GPIOA_PUPDR &= ~0x3c000000; // A13,A14 (no pull-up/pull-down)
 	GPIOA_MODER ^= 0x3c000000; // A13,A14 (output)
@@ -123,7 +124,7 @@ void checkcfg(void) {
 #ifdef ANALOG
 	cfg.arm = 0;
 #else
-#ifndef ANALOG_PIN
+#ifndef ANALOG_CHAN
 	if (IO_ANALOG) cfg.arm = 1; // Ensure low level on startup
 	else
 #endif
@@ -150,7 +151,7 @@ void checkcfg(void) {
 	cfg.freq_max = clamp(cfg.freq_max, cfg.freq_min, 96);
 	cfg.duty_min = clamp(cfg.duty_min, 1, 100);
 	cfg.duty_max = clamp(cfg.duty_max, cfg.duty_min, 100);
-	cfg.duty_spup = clamp(cfg.duty_spup, 1, 50);
+	cfg.duty_spup = clamp(cfg.duty_spup, 1, 100);
 	cfg.duty_ramp = clamp(cfg.duty_ramp, 0, 100);
 	cfg.duty_rate = clamp(cfg.duty_rate, 1, 100);
 	cfg.duty_drag = clamp(cfg.duty_drag, 0, 100);
@@ -160,11 +161,13 @@ void checkcfg(void) {
 	cfg.throt_min = clamp(cfg.throt_min, 900, 1900);
 	cfg.throt_max = clamp(cfg.throt_max, cfg.throt_min + 200, 2100);
 	cfg.throt_mid = clamp(cfg.throt_mid, cfg.throt_min + 100, cfg.throt_max - 100);
+	cfg.analog_min = clamp(cfg.analog_min, 0, 3200);
+	cfg.analog_max = clamp(cfg.analog_max, cfg.analog_min + 200, 3400);
 #ifdef IO_PA2
 	cfg.input_mode = clamp(cfg.input_mode, 0, 5);
 	cfg.input_chid = cfg.input_mode >= 3 ? clamp(cfg.input_chid, 1, cfg.input_mode == 3 ? 14 : 16) : 0;
 #else
-#if defined IO_PA6 || defined ANALOG_PIN
+#if defined IO_PA6 || defined ANALOG_CHAN
 	cfg.input_mode = clamp(cfg.input_mode, 0, 1);
 #else
 	cfg.input_mode = 0;

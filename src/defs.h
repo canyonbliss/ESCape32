@@ -87,12 +87,6 @@
 #ifndef CURR_MUL
 #define CURR_MUL 0 // mA/mV
 #endif
-#ifndef ANALOG_MIN
-#define ANALOG_MIN 100 // mV
-#endif
-#ifndef ANALOG_MAX
-#define ANALOG_MAX 3200 // mV
-#endif
 #ifndef SERIAL_BR
 #define SERIAL_BR 460800
 #endif
@@ -133,7 +127,7 @@
 #define DUTY_MAX 100
 #endif
 #ifndef DUTY_SPUP
-#define DUTY_SPUP 10
+#define DUTY_SPUP 15
 #endif
 #ifndef DUTY_RAMP
 #define DUTY_RAMP 0
@@ -165,6 +159,12 @@
 #endif
 #ifndef THROT_MAX
 #define THROT_MAX 2000
+#endif
+#ifndef ANALOG_MIN
+#define ANALOG_MIN 100
+#endif
+#ifndef ANALOG_MAX
+#define ANALOG_MAX 3200
 #endif
 #ifndef INPUT_MODE
 #define INPUT_MODE 0
