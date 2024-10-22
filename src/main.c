@@ -37,7 +37,7 @@ const Cfg cfgdata = {
 	.duty_max = DUTY_MAX,       // Maximum duty cycle (%) [1..100]
 	.duty_spup = DUTY_SPUP,     // Maximum duty cycle during spin-up (%) [1..25]
 	.duty_ramp = DUTY_RAMP,     // Maximum duty cycle ramp (kERPM) [0..100]
-	.duty_rate = DUTY_RATE,     // Acceleration slew rate (0.1%/ms) [1..100]
+	.duty_rate = DUTY_RATE,     // Duty cycle slew rate (0.1%/ms) [1..100]
 	.duty_drag = DUTY_DRAG,     // Drag brake amount (%) [0..100]
 	.throt_mode = THROT_MODE,   // Throttle mode (0 - forward, 1 - forward/reverse, 2 - forward/brake/reverse)
 	.throt_set = THROT_SET,     // Preset throttle (%) [0..100]
@@ -71,7 +71,7 @@ int throt, ertm, erpm, temp, volt, curr, csum, dshotval, beepval = -1;
 char analog, telreq, telmode, flipdir, beacon, dshotext;
 
 static int step, sine, sync, ival, tval;
-static char prep, accl, tick, reverse, ready, brushed;
+static char prep, fast, tick, reverse, ready, brushed;
 static uint32_t tickms, tickmsv;
 static volatile char tickmsf;
 
@@ -88,19 +88,9 @@ static void reset(void) {
 	for (;;); // Never return
 }
 
-#ifndef SENSORED
-static void resync(void) {
-	TIM_DIER(IFTIM) = 0;
-	sync = 0;
-	accl = 0;
-	ival = 10000 << IFTIM_XRES;
-	ertm = 100000000;
-}
-#endif
-
 /*
 6-step commutation sequence:
- #  +|-  mask  code
+ #  +|-  MASK  BEMF
  1  C|B   110   101
  2  A|B   011   001
  3  A|C   101   011
@@ -110,7 +100,7 @@ static void resync(void) {
 */
 
 static void nextstep(void) {
-#ifndef SENSORED
+#ifdef COMP_MAP
 	if (brushed) {
 		int m1 = TIM_CCMR1_OC1PE | TIM_CCMR1_OC2PE;
 		int m2 = TIM_CCMR2_OC3PE;
@@ -197,21 +187,20 @@ static void nextstep(void) {
 		return;
 	}
 #else
-	static const char map[] = {2, 4, 3, 6, 1, 5}; // map[code] -> step
-	int code = IFTIM_IDR;
-	if (code < 1 || code > 6) reset(); // Invalid Hall sensor code
-#ifdef INVERTED_HALL
-	code ^= 7;
+	static const char map[][2] = {{2, 4}, {4, 6}, {3, 5}, {6, 2}, {1, 3}, {5, 1}}; // Hall sensor code mapping
+	if (ertm > 2000) {
+		int code = IFTIM_IDR;
+		if (code < 1 || code > 6) reset(); // Invalid Hall sensor code
+		step = map[code - 1][!!reverse];
+	} else
 #endif
-	step = map[code - 1];
-#endif
-	static const char seq[] = {0x35, 0x19, 0x2b, 0x32, 0x1e, 0x2c}; // Commutation sequence
-	static int buf[6];
 	if (reverse) {
 		if (--step < 1) step = 6;
 	} else {
 		if (++step > 6) step = 1;
 	}
+	static const char seq[] = {0x35, 0x19, 0x2b, 0x32, 0x1e, 0x2c}; // Commutation sequence
+	static int buf[6];
 	int x = seq[step - 1];
 	int m = x >> 3; // Energized phase mask
 	int p = x & m; // Positive phase
@@ -224,7 +213,7 @@ static void nextstep(void) {
 	int m2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE | TIM_CCMR2_OC4M_PWM1;
 	int er = TIM_CCER_CC4E;
 #endif
-#ifndef SENSORED
+#ifdef COMP_MAP
 	int cc = (step & 1) ^ reverse ? 4 : 0; // BEMF rising/falling
 #endif
 	if (p & 1) {
@@ -248,7 +237,7 @@ static void nextstep(void) {
 		m1 |= TIM_CCMR1_OC1M_FORCE_LOW;
 #endif
 		er |= TIM_CCER_CC1NE;
-#ifndef SENSORED
+#ifdef COMP_MAP
 		cc |= 1;
 #endif
 	}
@@ -273,7 +262,7 @@ static void nextstep(void) {
 		m1 |= TIM_CCMR1_OC2M_FORCE_LOW;
 #endif
 		er |= TIM_CCER_CC2NE;
-#ifndef SENSORED
+#ifdef COMP_MAP
 		cc |= 2;
 #endif
 	}
@@ -298,7 +287,7 @@ static void nextstep(void) {
 		m2 |= TIM_CCMR2_OC3M_FORCE_LOW;
 #endif
 		er |= TIM_CCER_CC3NE;
-#ifndef SENSORED
+#ifdef COMP_MAP
 		cc |= 3;
 #endif
 	}
@@ -313,7 +302,7 @@ static void nextstep(void) {
 	TIM1_CCER = er;
 	buf[step - 1] = ival;
 	if (sync == 6) ertm = (buf[0] + buf[1] + buf[2] + buf[3] + buf[4] + buf[5]) >> (IFTIM_XRES + 1); // Electrical revolution time (us)
-#ifndef SENSORED
+#ifdef COMP_MAP
 	static int pcc, val, cnt;
 	compctl(pcc);
 	pcc = cc;
@@ -322,8 +311,10 @@ static void nextstep(void) {
 		cnt = 0;
 	} else if (++cnt == 6) {
 		if ((val > ival ? val - ival : ival - val) > ival >> 1) { // Probably desync
-			resync();
-			return;
+			sync = 0;
+			fast = 0;
+			ival = 5000 << IFTIM_XRES;
+			ertm = 100000000;
 		}
 		val = ival;
 		cnt = 0;
@@ -399,7 +390,7 @@ static void laststep(void) {
 	TIM1_CCMR2 = TIM_CCMR2_OC3PE | TIM_CCMR2_OC3M_PWM1;
 #endif
 	TIM1_EGR = TIM_EGR_COMG;
-#ifndef SENSORED
+#ifdef COMP_MAP
 	compctl(0);
 #endif
 }
@@ -426,30 +417,43 @@ void tim1_com_isr(void) {
 	nextstep();
 }
 
-#ifdef SENSORED
-void iftim_isr(void) { // Any change on Hall sensor inputs
-	if (!(TIM_DIER(IFTIM) & TIM_DIER_CC1IE)) return;
-	ival = (ival * 3 + TIM_CCR1(IFTIM)) >> 2;
-	if (sync < 6) ++sync;
-}
-#else
+#ifdef COMP_MAP
 void iftim_isr(void) { // BEMF zero-crossing
 	int er = TIM_DIER(IFTIM);
 	int sr = TIM_SR(IFTIM);
 	if ((er & TIM_DIER_UIE) && (sr & TIM_SR_UIF)) { // Timeout
 		TIM_SR(IFTIM) = ~TIM_SR_UIF;
-		resync();
+		TIM_DIER(IFTIM) = 0;
+		sync = 0;
+		fast = 0;
+		ival = 10000 << IFTIM_XRES;
+		ertm = 100000000;
 		return;
 	}
 	if (!(er & IFTIM_ICIE)) return;
 	int t = IFTIM_ICR; // Time since last zero-crossing
 	if (t < ival >> 1) return;
 	int u = ival * 3;
-	accl = t < u >> 2 && sync == 6; // Rapid acceleration
+	fast = (t < u >> 2 || t > u >> 1) && ertm < 2000; // Fast acceleration/deceleration
 	ival = (t + u) >> 2; // Commutation interval
 	IFTIM_OCR = max((ival - (ival * cfg.timing >> 5)) >> 1, 1); // Commutation delay
 	TIM_EGR(IFTIM) = TIM_EGR_UG;
 	TIM_DIER(IFTIM) = 0;
+	if (sync < 6) ++sync;
+}
+#else
+void iftim_isr(void) { // Any change on Hall sensor inputs
+	int er = TIM_DIER(IFTIM);
+	int sr = TIM_SR(IFTIM);
+	if ((er & TIM_DIER_UIE) && (sr & TIM_SR_UIF)) { // Timeout
+		TIM_SR(IFTIM) = ~TIM_SR_UIF;
+		sync = 0;
+		ival = 1 << (IFTIM_XRES + 16);
+		ertm = 100000000;
+		return;
+	}
+	if (!(er & TIM_DIER_CC1IE)) return;
+	ival = (ival * 3 + TIM_CCR1(IFTIM)) >> 2;
 	if (sync < 6) ++sync;
 }
 #endif
@@ -547,12 +551,6 @@ void main(void) {
 	TIM_CR1(IFTIM) = TIM_CR1_URS;
 	TIM_EGR(IFTIM) = TIM_EGR_UG;
 	TIM_CR1(IFTIM) = TIM_CR1_CEN | TIM_CR1_ARPE | TIM_CR1_URS;
-#ifdef SENSORED
-	TIM_CR2(IFTIM) = TIM_CR2_TI1S | TIM_CR2_MMS_UPDATE; // TI1=CH1^CH2^CH3, TRGO=UPDATE
-	TIM_SMCR(IFTIM) = TIM_SMCR_SMS_RM | TIM_SMCR_TS_TI1F_ED; // Reset on any edge on TI1
-	TIM_CCMR1(IFTIM) = TIM_CCMR1_CC1S_IN_TRC | TIM_CCMR1_IC1F_DTF_DIV_8_N_8;
-	TIM_CCER(IFTIM) = TIM_CCER_CC1E; // IC1 on any edge on TI1
-#endif
 	nvic_set_priority(NVIC_PENDSV_IRQ, 0x80);
 	STK_RVR = CLK_KHZ / 16 - 1; // 16kHz
 	STK_CVR = 0;
@@ -617,17 +615,14 @@ void main(void) {
 				running = 1;
 			}
 		} else { // Neutral
-#ifndef SENSORED
 			if (sync == 6) boost = 0; // Coasting
-			else // Drag brake
-#endif
-			{
+			else { // Drag brake
 				curduty = cfg.duty_drag * 20;
 				running = 0;
 			}
 			if (braking == 1) braking = 2; // Reverse after braking
 		}
-#ifndef SENSORED
+#ifdef COMP_MAP
 		if (running && sine) { // Sine startup
 			if (!newduty) {
 				if (!ertm) goto skip_duty;
@@ -646,7 +641,7 @@ void main(void) {
 			sine = 0;
 			sync = 0;
 			prep = 0;
-			accl = 0;
+			fast = 0;
 			ival = 10000 << IFTIM_XRES;
 			nextstep();
 			__enable_irq();
@@ -669,11 +664,11 @@ void main(void) {
 			newduty += boost;
 			if ((newduty -= choke) < 0) newduty = 0;
 			if (newduty > maxduty) newduty = maxduty;
-			int a = accl ? 0 : cfg.duty_rate;
+			int a = fast ? 0 : cfg.duty_rate;
 			int b = a >> 3;
 			if (r < (a & 7)) ++b;
 			if (++r == 8) r = 0;
-			if (curduty >= newduty || (curduty += b) > newduty) curduty = newduty; // Acceleration slew rate limiting
+			if (curduty > newduty ? sync < 6 || (curduty -= b) < newduty : (curduty += b) > newduty) curduty = newduty; // Duty cycle slew rate limiting
 		}
 #ifdef FULL_DUTY // Allow 100% duty cycle
 		int ccr = scale(curduty, 0, 2000, running && cfg.damp ? DEAD_TIME : 0, arr--);
@@ -694,13 +689,13 @@ void main(void) {
 			nextstep();
 			TIM1_EGR = TIM_EGR_UG | TIM_EGR_COMG;
 			TIM1_DIER |= TIM_DIER_COMIE;
-#ifdef SENSORED
-			TIM_SR(IFTIM) = ~TIM_SR_CC1IF;
-			TIM_DIER(IFTIM) = TIM_DIER_CC1IE;
-			TIM_ARR(IFTIM) = -1;
+#ifdef COMP_MAP
+			IFTIM_OCR = (1 << (IFTIM_XRES + 16)) - 1;
 #else
-			TIM_ARR(IFTIM) = IFTIM_OCR = (1 << (IFTIM_XRES + 16)) - 1;
+			TIM_SR(IFTIM) = ~TIM_SR_CC1IF;
+			TIM_DIER(IFTIM) = TIM_DIER_UIE | TIM_DIER_CC1IE;
 #endif
+			TIM_ARR(IFTIM) = (1 << (IFTIM_XRES + 16)) - 1;
 			TIM_EGR(IFTIM) = TIM_EGR_UG;
 			__enable_irq();
 			initpid(&bpid, 10000 << IFTIM_XRES);
@@ -716,7 +711,7 @@ void main(void) {
 			sine = 0;
 			sync = 0;
 			prep = 0;
-			accl = 0;
+			fast = 0;
 			ertm = 0;
 			erpm = 0;
 			__enable_irq();
